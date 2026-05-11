@@ -67,6 +67,33 @@ function resolveTgMentions(
   return result;
 }
 
+/**
+ * When a TG user replies to a forwarded Zalo message from ANOTHER person,
+ * prepend "@Name " to the message so the recipient on Zalo sees who is being
+ * addressed. Returns null when:
+ *  - not a group (mentions don't apply in DMs)
+ *  - replying to our own sent message (TG→Zalo direction)
+ *  - no quote data / display name found
+ */
+function buildReplyAutoMention(
+  replyToMsgId: number | undefined,
+  threadType: ThreadType,
+): { prefix: string; mention: { pos: number; uid: string; len: number } } | null {
+  if (replyToMsgId === undefined) return null;
+  if (threadType !== ThreadType.Group) return null;
+  // Skip if replying to a message WE sent (TG→Zalo direction)
+  if (sentMsgStore.get(replyToMsgId) !== undefined) return null;
+  const quote = msgStore.getQuote(replyToMsgId);
+  if (!quote) return null;
+  const name = userCache.getName(quote.uidFrom)?.trim();
+  if (!name) return null;
+  const mentionText = `@${name}`;
+  return {
+    prefix: `${mentionText} `,
+    mention: { pos: 0, uid: quote.uidFrom, len: mentionText.length },
+  };
+}
+
 function normalizePhoneSearchQuery(query: string): string | null {
   const trimmed = query.trim();
   if (!trimmed) return null;
@@ -1104,17 +1131,27 @@ export function setupTelegramHandler(
         const replyToMsgId = msg.reply_to_message?.message_id;
         const zaloQuote = replyToMsgId !== undefined ? msgStore.getQuote(replyToMsgId) : undefined;
 
-        const zaloMentions = resolveTgMentions(
+        const _rawTextMentions = resolveTgMentions(
           msg.text,
           ('entities' in msg ? msg.entities : undefined) as ReadonlyArray<TgEntity> | undefined,
           threadType === ThreadType.Group,
         );
 
+        // Auto-prepend @Name when replying to someone else's message in a group
+        const _textAutoMention = buildReplyAutoMention(replyToMsgId, threadType);
+        const finalText = _textAutoMention ? _textAutoMention.prefix + msg.text : msg.text;
+        const zaloMentions = _textAutoMention
+          ? [
+              _textAutoMention.mention,
+              ..._rawTextMentions.map(m => ({ ...m, pos: m.pos + _textAutoMention.prefix.length })),
+            ]
+          : _rawTextMentions;
+
         sentMsgStore.markSending(zaloId);
         try {
           let sendResult = await api.sendMessage(
             {
-              msg: msg.text,
+              msg: finalText,
               ...(zaloQuote ? { quote: zaloQuote } : {}),
               ...(zaloMentions.length ? { mentions: zaloMentions } : {}),
             },
@@ -1128,7 +1165,7 @@ export function setupTelegramHandler(
               console.warn('[TG→Zalo] code 114 with quote, retrying without quote');
               return api.sendMessage(
                 {
-                  msg: msg.text,
+                  msg: finalText,
                   ...(zaloMentions.length ? { mentions: zaloMentions } : {}),
                 },
                 zaloId,
@@ -1242,16 +1279,33 @@ export function setupTelegramHandler(
         }
       };
 
+      // Compute auto-mention once for this entire message (reply → prepend @Name)
+      const _captionReplyMsgId = ('reply_to_message' in msg
+        ? (msg as { reply_to_message?: { message_id: number } }).reply_to_message?.message_id
+        : undefined);
+      const _autoMentionForMedia = buildReplyAutoMention(_captionReplyMsgId, threadType);
+
       // Helper: extract caption + resolved mentions from any media message
       const getCaptionMentions = () => {
         const cap = ('caption' in msg ? (msg as { caption?: string }).caption : undefined);
         const capEntities = ('caption_entities' in msg
           ? (msg as { caption_entities?: ReadonlyArray<TgEntity> }).caption_entities
           : undefined);
-        const capMentions = cap
+        const rawMentions = cap
           ? resolveTgMentions(cap, capEntities, threadType === ThreadType.Group)
-          : undefined;
-        return { cap, capMentions };
+          : [];
+        if (_autoMentionForMedia) {
+          const prefixLen = _autoMentionForMedia.prefix.length;
+          const capMentions = [
+            _autoMentionForMedia.mention,
+            ...rawMentions.map(m => ({ ...m, pos: m.pos + prefixLen })),
+          ];
+          return {
+            cap: cap ? _autoMentionForMedia.prefix + cap : _autoMentionForMedia.prefix.trimEnd(),
+            capMentions,
+          };
+        }
+        return { cap, capMentions: rawMentions.length ? rawMentions : undefined };
       };
 
       // Helper: flush a media group — download all files and send as single Zalo message
