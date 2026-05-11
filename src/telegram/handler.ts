@@ -788,6 +788,41 @@ export function setupTelegramHandler(
     );
   });
 
+  // /status — bridge uptime, topic count, Zalo account
+  tgBot.command('status', async (ctx) => {
+    if (ctx.chat.id !== config.telegram.groupId) return;
+    const replyOpts = ctx.message.message_thread_id
+      ? { message_thread_id: ctx.message.message_thread_id }
+      : {};
+    const uptimeSec = Math.floor((Date.now() - _bridgeStartTime) / 1000);
+    const h = Math.floor(uptimeSec / 3600);
+    const m = Math.floor((uptimeSec % 3600) / 60);
+    const s = uptimeSec % 60;
+    const uptimeStr = `${h}g ${m}p ${s}s`;
+    const all = store.all();
+    const groupCount = all.filter(e => e.type === 1).length;
+    const dmCount    = all.length - groupCount;
+    let accountLine = '\n👤 Zalo: <b>chưa kết nối</b>';
+    if (currentApi) {
+      try {
+        const info = await currentApi.fetchAccountInfo() as {
+          profile?: { displayName?: string; zaloName?: string };
+        };
+        const name = info?.profile?.displayName ?? info?.profile?.zaloName ?? '?';
+        accountLine = `\n👤 Zalo: <b>${escapeHtml(name)}</b> 🟢`;
+      } catch {
+        accountLine = '\n👤 Zalo: đã kết nối 🟢';
+      }
+    }
+    await ctx.telegram.sendMessage(
+      config.telegram.groupId,
+      `📊 <b>Trạng thái Bridge</b>${accountLine}\n` +
+      `⏱ Uptime: <code>${uptimeStr}</code>\n` +
+      `📌 Topics: <b>${all.length}</b> (${groupCount} nhóm, ${dmCount} DM)`,
+      { ...replyOpts, parse_mode: 'HTML' },
+    );
+  });
+
   tgBot.on('callback_query', async (ctx) => {
     const data = 'data' in ctx.callbackQuery ? ctx.callbackQuery.data : undefined;
 
@@ -1805,41 +1840,6 @@ export function setupTelegramHandler(
     } catch (err) {
       console.error('[TG→Zalo] poll_answer error:', err);
     }
-  });
-
-  // /status — bridge uptime, topic count, Zalo account
-  tgBot.command('status', async (ctx) => {
-    if (ctx.chat.id !== config.telegram.groupId) return;
-    const replyOpts = ctx.message.message_thread_id
-      ? { message_thread_id: ctx.message.message_thread_id }
-      : {};
-    const uptimeSec = Math.floor((Date.now() - _bridgeStartTime) / 1000);
-    const h = Math.floor(uptimeSec / 3600);
-    const m = Math.floor((uptimeSec % 3600) / 60);
-    const s = uptimeSec % 60;
-    const uptimeStr = `${h}g ${m}p ${s}s`;
-    const all = store.all();
-    const groupCount = all.filter(e => e.type === 1).length;
-    const dmCount    = all.length - groupCount;
-    let accountLine = '\n👤 Zalo: <b>chưa kết nối</b>';
-    if (currentApi) {
-      try {
-        const info = await currentApi.fetchAccountInfo() as {
-          profile?: { displayName?: string; zaloName?: string };
-        };
-        const name = info?.profile?.displayName ?? info?.profile?.zaloName ?? '?';
-        accountLine = `\n👤 Zalo: <b>${escapeHtml(name)}</b> 🟢`;
-      } catch {
-        accountLine = '\n👤 Zalo: đã kết nối 🟢';
-      }
-    }
-    await ctx.telegram.sendMessage(
-      config.telegram.groupId,
-      `📊 <b>Trạng thái Bridge</b>${accountLine}\n` +
-      `⏱ Uptime: <code>${uptimeStr}</code>\n` +
-      `📌 Topics: <b>${all.length}</b> (${groupCount} nhóm, ${dmCount} DM)`,
-      { ...replyOpts, parse_mode: 'HTML' },
-    );
   });
 
   return setCurrentApi;

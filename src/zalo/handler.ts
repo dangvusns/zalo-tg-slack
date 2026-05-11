@@ -87,29 +87,18 @@ async function populateGroupMemberCache(api: ZaloAPI, groupId: string): Promise<
     let saved = 0;
     for (let i = 0; i < uids.length; i += BATCH) {
       const batch = uids.slice(i, i + BATCH);
-      let resp: { changed_profiles?: Record<string, { displayName?: string; zaloName?: string }>; unchanged_profiles?: Record<string, unknown> } | undefined;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          resp = await api.getUserInfo(batch) as typeof resp;
-          break;
-        } catch (e) {
-          const code = (e as { code?: number }).code;
-          if (code === 221 && attempt < 2) {
-            await new Promise(r => setTimeout(r, 2_000 * (attempt + 1)));
-          } else { throw e; }
-        }
-      }
-      if (!resp) continue;
-      const profiles = resp.changed_profiles ?? {};
+      const resp = await api.getUserInfo(batch) as {
+        changed_profiles?: Record<string, { displayName?: string; zaloName?: string }>;
+        unchanged_profiles?: Record<string, unknown>;
+      };
+      const profiles = resp?.changed_profiles ?? {};
       // unchanged_profiles also has profile data
-      const unchanged = resp.unchanged_profiles ?? {};
+      const unchanged = resp?.unchanged_profiles ?? {};
       for (const uid of batch) {
         const p = (profiles[uid] ?? unchanged[uid]) as { displayName?: string; zaloName?: string } | undefined;
         const name = p?.displayName?.trim() || p?.zaloName?.trim();
         if (uid && name) { userCache.saveForGroup(uid, name, groupId); saved++; }
       }
-      // Small pause between batches to stay under rate limit
-      if (i + BATCH < uids.length) await new Promise(r => setTimeout(r, 500));
     }
     console.log(`[Zalo] Cached ${saved}/${uids.length} members for group ${groupId}`);
   } catch (err) {
@@ -379,18 +368,13 @@ const _memberCacheLoaded = new Set<string>();
 const _inFlightMsgIds = new Set<string>();
 
 export async function setupZaloHandler(api: ZaloAPI): Promise<void> {
-  // Pre-populate userCache for all existing group topics on startup.
-  // Stagger calls by 1.5 s to avoid Zalo rate-limit (code 221).
-  const groupEntries = store.all().filter(e => e.type === 1 /* Group */);
-  for (const entry of groupEntries) {
-    _memberCacheLoaded.add(entry.zaloId);
-  }
-  (async () => {
-    for (const entry of groupEntries) {
-      await populateGroupMemberCache(api, entry.zaloId);
-      await new Promise(r => setTimeout(r, 1_500));
+  // Pre-populate userCache for all existing group topics on startup
+  for (const entry of store.all()) {
+    if (entry.type === 1 /* Group */) {
+      void populateGroupMemberCache(api, entry.zaloId);
+      _memberCacheLoaded.add(entry.zaloId);
     }
-  })().catch(() => undefined);
+  }
 
   // Load alias list (tên danh bạ) BEFORE attaching listeners so that the first
   // message event already has aliases available for topic naming.
