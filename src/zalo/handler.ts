@@ -524,9 +524,11 @@ export async function setupZaloHandler(api: ZaloAPI): Promise<void> {
       const tgOpts  = { ...tgBase, parse_mode: 'HTML' as const, caption };
 
       // Build quote data + mapping helper — saved after every successful TG send
-      const zaloMsgIds = msg.data.realMsgId && msg.data.realMsgId !== msg.data.msgId
-        ? [msg.data.msgId, msg.data.realMsgId]
-        : [msg.data.msgId];
+      const zaloMsgIds = [
+        msg.data.msgId,
+        ...(msg.data.realMsgId && msg.data.realMsgId !== msg.data.msgId ? [msg.data.realMsgId] : []),
+        ...(msg.data.cliMsgId && msg.data.cliMsgId !== msg.data.msgId ? [msg.data.cliMsgId] : []),
+      ];
       const zaloQuoteData: ZaloQuoteData = {
         msgId:    msg.data.msgId,
         cliMsgId: msg.data.cliMsgId ?? '',
@@ -580,8 +582,8 @@ export async function setupZaloHandler(api: ZaloAPI): Promise<void> {
         }
         if (!url) { console.warn('[ZaloHandler] Photo: no URL found in content:', media); return; }
 
-        // Caption attached to the photo by the sender (Zalo stores it in description)
-        const photoCaption = media.description?.trim() || undefined;
+        // Caption attached to the photo by the sender (Zalo stores it in the `title` field)
+        const photoCaption = media.title?.trim() || undefined;
 
         const childnumber: number = (media as { childnumber?: number }).childnumber ?? 0;
         const albumKey = `${zaloId}:${msg.data.uidFrom}`;
@@ -593,7 +595,7 @@ export async function setupZaloHandler(api: ZaloAPI): Promise<void> {
         zaloAlbumStore.add(
           albumKey,
           url,
-          zaloMsgIds[0],
+          zaloMsgIds,
           { senderName, topicId, tgBase, zaloQuote: zaloQuoteData },
           async (buf) => {
             if (buf.urls.length === 1) {
@@ -1159,9 +1161,21 @@ ${escapeHtml(photoCaption)}`
   api.listener.on('undo', async (undo: any) => {
     try {
       const data = undo?.data;
-      // The recalled Zalo message ID
-      const zaloMsgId = String(data?.content?.globalMsgId ?? data?.msgId ?? '');
-      if (!zaloMsgId) return;
+      // The recalled Zalo message ID.
+      // Group chat: content.globalMsgId is set.
+      // Personal chat: globalMsgId=0, realMsgId="0", but content.cliMsgId is the cliMsgId
+      // of the recalled message (which we also store in _zaloToTg via zaloMsgIds).
+      const rawMsgId =
+        (data?.content?.globalMsgId && data.content.globalMsgId !== 0)
+          ? String(data.content.globalMsgId)
+          : (data?.content?.cliMsgId && String(data.content.cliMsgId) !== '0')
+            ? String(data.content.cliMsgId)
+            : '';
+      const zaloMsgId = rawMsgId;
+      if (!zaloMsgId) {
+        console.log(`[ZaloHandler] Undo: could not resolve msgId, raw undo data:`, JSON.stringify(data));
+        return;
+      }
 
       const tgMsgId = msgStore.getTgMsgId(zaloMsgId);
       if (tgMsgId === undefined) {
@@ -1182,7 +1196,7 @@ ${escapeHtml(photoCaption)}`
         {
           message_thread_id: topicId,
           parse_mode: 'HTML',
-          reply_to_message_id: tgMsgId,
+          reply_parameters: { message_id: tgMsgId, allow_sending_without_reply: true },
         },
       );
       console.log(`[ZaloHandler] Undo: notified recall for TG msg ${tgMsgId} (zaloMsgId=${zaloMsgId})`);

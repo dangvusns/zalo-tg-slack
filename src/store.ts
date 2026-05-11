@@ -686,7 +686,7 @@ export const zaloAlbumStore = {
   add(
     key: string,
     url: string,
-    msgId: string,
+    msgIds: string[],
     meta: Omit<ZaloAlbumBuffer, 'timer' | 'urls' | 'zaloMsgIds'>,
     onFlush: (buf: Omit<ZaloAlbumBuffer, 'timer'>) => void,
   ): void {
@@ -694,7 +694,7 @@ export const zaloAlbumStore = {
     if (existing) {
       clearTimeout(existing.timer);
       existing.urls.push(url);
-      existing.zaloMsgIds.push(msgId);
+      existing.zaloMsgIds.push(...msgIds);
       existing.timer = setTimeout(() => {
         _zaloAlbumBuffers.delete(key);
         onFlush({ urls: existing.urls, zaloMsgIds: existing.zaloMsgIds, ...meta });
@@ -703,7 +703,7 @@ export const zaloAlbumStore = {
       const buf: ZaloAlbumBuffer = {
         ...meta,
         urls: [url],
-        zaloMsgIds: [msgId],
+        zaloMsgIds: [...msgIds],
         timer: setTimeout(() => {
           _zaloAlbumBuffers.delete(key);
           onFlush({ urls: buf.urls, zaloMsgIds: buf.zaloMsgIds, ...meta });
