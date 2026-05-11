@@ -877,6 +877,41 @@ export function setupTelegramHandler(
       return;
     }
 
+    // ── fr: accept/reject incoming friend request from Zalo ─────────────────
+    if (data?.startsWith('fr:')) {
+      const parts = data.split(':');
+      const action = parts[1]; // 'accept' or 'reject'
+      const fromUid = parts[2];
+      if (!fromUid || !currentApi) { await ctx.answerCbQuery('❌ Zalo chưa kết nối'); return; }
+      try {
+        if (action === 'accept') {
+          await currentApi.acceptFriendRequest(fromUid);
+          await ctx.answerCbQuery('✅ Đã chấp nhận kết bạn!');
+          await ctx.editMessageReplyMarkup(undefined);
+          await ctx.editMessageText(
+            (ctx.callbackQuery.message && 'text' in ctx.callbackQuery.message
+              ? ctx.callbackQuery.message.text ?? ''
+              : '') + '\n\n✅ Đã chấp nhận',
+            { parse_mode: 'HTML' },
+          ).catch(() => undefined);
+        } else {
+          await currentApi.rejectFriendRequest(fromUid);
+          await ctx.answerCbQuery('✅ Đã từ chối');
+          await ctx.editMessageReplyMarkup(undefined);
+          await ctx.editMessageText(
+            (ctx.callbackQuery.message && 'text' in ctx.callbackQuery.message
+              ? ctx.callbackQuery.message.text ?? ''
+              : '') + '\n\n❌ Đã từ chối',
+            { parse_mode: 'HTML' },
+          ).catch(() => undefined);
+        }
+      } catch (err) {
+        console.error('[cb/fr]', err);
+        await ctx.answerCbQuery('❌ Thao tác thất bại');
+      }
+      return;
+    }
+
     // ── af: send friend request ──────────────────────────────────────────────
     if (data?.startsWith('af:')) {
       const userId = data.slice(3);
@@ -1660,18 +1695,17 @@ export function setupTelegramHandler(
 
       if ('location' in msg && msg.location) {
         const { latitude, longitude } = msg.location;
+        const venue = ('venue' in msg && msg.venue) ? (msg.venue as { title?: string; address?: string }) : undefined;
         const mapsUrl = `https://www.google.com/maps?q=${latitude},${longitude}`;
+        const locationLabel = venue?.title
+          ? `📍 ${venue.title}${venue.address ? ` — ${venue.address}` : ''}\n${mapsUrl}`
+          : `📍 ${mapsUrl}`;
         try {
-          // zca-js has no sendLocation — use sendLink for a map preview bubble in Zalo
-          await api.sendLink(
-            { msg: '', link: mapsUrl },
-            zaloId,
-            threadType,
-          );
+          // zca-js has no sendLocation — send as plain text with coords
+          await api.sendMessage({ msg: locationLabel }, zaloId, threadType);
           console.log(`[TG→Zalo] Location sent: ${latitude},${longitude}`);
         } catch (err) {
-          // Fallback: send as plain text link
-          await api.sendMessage({ msg: `📍 ${mapsUrl}` }, zaloId, threadType);
+          console.error('[TG→Zalo] Location send error:', err);
         }
         return;
       }

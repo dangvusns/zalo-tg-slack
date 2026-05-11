@@ -1,4 +1,4 @@
-import { ThreadType } from 'zca-js';
+import { ThreadType, FriendEventType } from 'zca-js';
 import { createReadStream } from 'fs';
 import path from 'path';
 import QRCode from 'qrcode';
@@ -1444,6 +1444,49 @@ ${escapeHtml(photoCaption)}`
       console.log(`[ZaloHandler] GroupEvent type=${type} group=${groupId}`);
     } catch (err) {
       console.error('[ZaloHandler] GroupEvent error:', err);
+    }
+  });
+
+  // ── Friend events (lời mời kết bạn, chấp nhận, ...) ──────────────────────
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  api.listener.on('friend_event', async (evt: any) => {
+    try {
+      // Only care about incoming friend request (someone requesting to be our friend)
+      if (evt.type !== FriendEventType.REQUEST) return;
+      // isSelf = we sent the request, skip
+      if (evt.isSelf) return;
+
+      const data = evt.data as { fromUid: string; toUid: string; message: string };
+      const fromUid = data?.fromUid;
+      if (!fromUid) return;
+
+      // Resolve display name
+      let displayName = fromUid;
+      try {
+        const info = await api.getUserInfo(fromUid) as {
+          userId?: string; zaloName?: string; display_name?: string;
+        } | undefined;
+        displayName = info?.display_name ?? info?.zaloName ?? fromUid;
+      } catch { /* use uid as fallback */ }
+
+      const msgText = data?.message?.trim();
+
+      await tg.sendMessage(
+        config.telegram.groupId,
+        `👤 <b>${escapeHtml(displayName)}</b> muốn kết bạn với bạn qua Zalo!${msgText ? `\n💬 <i>${escapeHtml(msgText)}</i>` : ''}`,
+        {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [[
+              { text: '✅ Chấp nhận', callback_data: `fr:accept:${fromUid}` },
+              { text: '❌ Từ chối',   callback_data: `fr:reject:${fromUid}` },
+            ]],
+          },
+        },
+      );
+      console.log(`[ZaloHandler] FriendEvent REQUEST from ${fromUid} (${displayName})`);
+    } catch (err) {
+      console.error('[ZaloHandler] FriendEvent error:', err);
     }
   });
 }
