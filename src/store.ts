@@ -109,11 +109,34 @@ export interface ZaloQuoteData {
 const MSG_CACHE_MAX = 2000;
 
 // ── Persistence helpers for msgStore ─────────────────────────────────────────
+//
+// On-disk format v2 (compact):
+//   {
+//     "v": 2,
+//     "s": [str0, str1, ...],          ← string intern table
+//     "p": [[zaloMsgId, tgMsgId], ...] ← pairs (same as v1)
+//     "q": [[tgMsgId, msgId, cliMsgId, uidFromIdx, ts, msgTypeIdx,
+//             content, ttl, zaloIdIdx, threadType], ...]
+//   }
+//   *Idx values are integer indices into s[].
+//   Saves ~40-60% vs v1 by eliminating repeated field names and interning
+//   zaloId / uidFrom / msgType strings (high repetition across entries).
+//   Backward-compatible: v1 files without "v" field load fine.
+
+interface MsgMapV1 {
+  pairs:  [string, number][];
+  quotes: [number, ZaloQuoteData][];
+}
+interface MsgMapV2 {
+  v: 2;
+  s: string[];
+  p: [string, number][];
+  q: [number, string, string, number, string, number, string | Record<string, unknown>, number, number, 0 | 1][];
+}
+type MsgMapFile = MsgMapV1 | MsgMapV2;
 
 interface MsgMapData {
-  /** Insertion-ordered list of [zaloMsgId, tgMsgId] pairs */
   pairs:  [string, number][];
-  /** tgMsgId → ZaloQuoteData */
   quotes: [number, ZaloQuoteData][];
 }
 
@@ -122,7 +145,30 @@ const _msgMapFile = path.resolve(config.dataDir, 'msg-map.json');
 function _loadMsgMap(): MsgMapData {
   if (!existsSync(_msgMapFile)) return { pairs: [], quotes: [] };
   try {
-    return JSON.parse(readFileSync(_msgMapFile, 'utf8')) as MsgMapData;
+    const raw = JSON.parse(readFileSync(_msgMapFile, 'utf8')) as MsgMapFile;
+    // v2 compact format
+    if ('v' in raw && raw.v === 2) {
+      const { s, p, q } = raw;
+      const quotes: [number, ZaloQuoteData][] = q.map(
+        ([tgId, msgId, cliMsgId, uidIdx, ts, typeIdx, content, ttl, zaloIdx, threadType]) => [
+          tgId,
+          {
+            msgId,
+            cliMsgId,
+            uidFrom:    s[uidIdx]!,
+            ts,
+            msgType:    s[typeIdx]!,
+            content,
+            ttl,
+            zaloId:     s[zaloIdx]!,
+            threadType,
+          } satisfies ZaloQuoteData,
+        ],
+      );
+      return { pairs: p, quotes };
+    }
+    // v1 legacy format
+    return raw as MsgMapData;
   } catch { return { pairs: [], quotes: [] }; }
 }
 
@@ -133,9 +179,37 @@ function _scheduleMsgPersist(): void {
     _msgPersistTimer = null;
     try {
       mkdirSync(path.dirname(_msgMapFile), { recursive: true });
-      const data: MsgMapData = {
-        pairs:  _msgKeyOrder.map(k => [k, _zaloToTg.get(k)!] as [string, number]),
-        quotes: [..._tgToQuote.entries()],
+
+      // Build string intern table: collect all zaloId, uidFrom, msgType values
+      const _internMap = new Map<string, number>();
+      const _intern: string[] = [];
+      const _idx = (s: string): number => {
+        let i = _internMap.get(s);
+        if (i === undefined) { i = _intern.length; _internMap.set(s, i); _intern.push(s); }
+        return i;
+      };
+
+      const q: MsgMapV2['q'] = [];
+      for (const [tgId, qt] of _tgToQuote) {
+        q.push([
+          tgId,
+          qt.msgId,
+          qt.cliMsgId,
+          _idx(qt.uidFrom),
+          qt.ts,
+          _idx(qt.msgType),
+          qt.content,
+          qt.ttl,
+          _idx(qt.zaloId),
+          qt.threadType,
+        ]);
+      }
+
+      const data: MsgMapV2 = {
+        v: 2,
+        s: _intern,
+        p: _msgKeyOrder.map(k => [k, _zaloToTg.get(k)!] as [string, number]),
+        q,
       };
       writeFileSync(_msgMapFile, JSON.stringify(data), 'utf8');
     } catch (e) {
