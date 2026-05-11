@@ -303,6 +303,8 @@ export const msgStore = {
 const USER_CACHE_MAX = 500;
 const _uidToName     = new Map<string, string>();
 const _normToUid     = new Map<string, string>();
+/** zaloId → (normalizedName → uid) — collision-safe per-group lookup */
+const _groupNameToUid = new Map<string, Map<string, string>>();
 
 function _normName(name: string): string {
   return name.toLowerCase().trim().replace(/\s+/g, ' ');
@@ -326,6 +328,20 @@ export const userCache = {
   /** Find a Zalo UID by (normalised) display name. Used for TG→Zalo mention. */
   resolveByName(rawName: string): string | undefined {
     return _normToUid.get(_normName(rawName));
+  },
+
+  /** Save display name scoped to a Zalo group for collision-safe resolution. */
+  saveForGroup(uid: string, displayName: string, zaloId: string): void {
+    this.save(uid, displayName);
+    let m = _groupNameToUid.get(zaloId);
+    if (!m) { m = new Map(); _groupNameToUid.set(zaloId, m); }
+    m.set(_normName(displayName), uid);
+  },
+
+  /** Resolve UID by name, preferring group-specific lookup over global. */
+  resolveByNameInGroup(rawName: string, zaloId: string): string | undefined {
+    const norm = _normName(rawName);
+    return _groupNameToUid.get(zaloId)?.get(norm) ?? _normToUid.get(norm);
   },
 
   /** Get display name for a UID. */

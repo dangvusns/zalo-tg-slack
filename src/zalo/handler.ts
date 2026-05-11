@@ -97,7 +97,7 @@ async function populateGroupMemberCache(api: ZaloAPI, groupId: string): Promise<
       for (const uid of batch) {
         const p = (profiles[uid] ?? unchanged[uid]) as { displayName?: string; zaloName?: string } | undefined;
         const name = p?.displayName?.trim() || p?.zaloName?.trim();
-        if (uid && name) { userCache.save(uid, name); saved++; }
+        if (uid && name) { userCache.saveForGroup(uid, name, groupId); saved++; }
       }
     }
     console.log(`[Zalo] Cached ${saved}/${uids.length} members for group ${groupId}`);
@@ -438,7 +438,11 @@ export async function setupZaloHandler(api: ZaloAPI): Promise<void> {
       }
 
       // Keep userCache up-to-date so TG→Zalo mention resolution works
-      userCache.save(msg.data.uidFrom, senderName);
+      if (type === ThreadType.Group) {
+        userCache.saveForGroup(msg.data.uidFrom, senderName, zaloId);
+      } else {
+        userCache.save(msg.data.uidFrom, senderName);
+      }
 
       // Parse content early so we can start media download in parallel with topic resolution
       const { text, media } = parseContent(msg.data.content);
@@ -772,6 +776,8 @@ ${escapeHtml(photoCaption)}`
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const details: any[] = await api.getStickersDetail([stickerId]);
           const detail = details?.[0];
+          // Animated stickers only have stickerSpriteUrl (sprite sheet) — no static webp/url
+          const isAnimated = !detail?.stickerWebpUrl && !detail?.stickerUrl && !!detail?.stickerSpriteUrl;
           const url: string | undefined =
             detail?.stickerWebpUrl ?? detail?.stickerUrl ?? detail?.stickerSpriteUrl;
           if (!url) {
@@ -782,18 +788,31 @@ ${escapeHtml(photoCaption)}`
           const localPath = await downloadToTemp(url, `sticker_${Date.now()}${ext}`);
           try {
             let sent: { message_id: number };
-            try {
-              // Try native TG sticker (webp ≤512 KB displays as a proper sticker)
+            if (isAnimated) {
+              // Animated stickers are sprite sheets — send as photo with label
+              const animCaption = type === ThreadType.Group
+                ? `${groupCaption(senderName)}<i>(sticker động 🎥)</i>`
+                : `<i>(sticker động 🎥)</i>`;
               const stream = createReadStream(localPath);
-              sent = await tg.sendSticker(
-                config.telegram.groupId,
-                { source: stream },
-                tgBase as Parameters<typeof tg.sendSticker>[2],
-              );
-            } catch {
-              // Fall back to photo if file is too large or format unsupported
-              const stream = createReadStream(localPath);
-              sent = await tg.sendPhoto(config.telegram.groupId, { source: stream }, tgOpts);
+              sent = await tg.sendPhoto(config.telegram.groupId, { source: stream }, {
+                ...tgBase,
+                caption: animCaption,
+                parse_mode: 'HTML',
+              });
+            } else {
+              try {
+                // Try native TG sticker (webp ≤512 KB displays as a proper sticker)
+                const stream = createReadStream(localPath);
+                sent = await tg.sendSticker(
+                  config.telegram.groupId,
+                  { source: stream },
+                  tgBase as Parameters<typeof tg.sendSticker>[2],
+                );
+              } catch {
+                // Fall back to photo if file is too large or format unsupported
+                const stream = createReadStream(localPath);
+                sent = await tg.sendPhoto(config.telegram.groupId, { source: stream }, tgOpts);
+              }
             }
             saveTgMapping(sent);
           } finally { await cleanTemp(localPath); }
@@ -1364,7 +1383,51 @@ ${escapeHtml(photoCaption)}`
         return;
       }
 
-      // Only notify for join/leave/remove — skip setting changes, pins, etc.
+      // ── Group name change: update TG topic name ──────────────────────────────────────
+      if (type === 'update_setting') {
+        const newName: string = (
+          (data?.groupName as string | undefined) ??
+          (data?.name     as string | undefined) ??
+          ''
+        ).trim();
+        if (newName) {
+          const tId = store.getTopicByZalo(groupId, 1);
+          if (tId !== undefined) {
+            await tg.editForumTopic(
+              config.telegram.groupId, tId, { name: topicName(newName, 1) },
+            ).catch(() => undefined);
+            const existing = store.getEntryByTopic(tId);
+            if (existing) store.set({ ...existing, name: newName });
+            _groupInfoCache.delete(groupId);
+            console.log(`[ZaloHandler] GroupEvent update_setting: group ${groupId} renamed to "${newName}"`);
+          }
+        }
+        return;
+      }
+
+      // ── Group name change: update TG topic name ────────────────────────────
+      if (type === 'update_setting') {
+        const newName: string = (
+          (data?.groupName as string | undefined) ??
+          (data?.name     as string | undefined) ??
+          ''
+        ).trim();
+        if (newName) {
+          const tId = store.getTopicByZalo(groupId, 1);
+          if (tId !== undefined) {
+            await tg.editForumTopic(
+              config.telegram.groupId, tId, { name: topicName(newName, 1) },
+            ).catch(() => undefined);
+            const existing = store.getEntryByTopic(tId);
+            if (existing) store.set({ ...existing, name: newName });
+            _groupInfoCache.delete(groupId);
+            console.log(`[ZaloHandler] GroupEvent update_setting: group ${groupId} renamed to "${newName}"`);
+          }
+        }
+        return;
+      }
+
+      // Only notify for join/leave/remove — skip other setting changes, pins, etc.
       const NOTIFY_TYPES = new Set(['join', 'leave', 'remove_member', 'block_member']);
       if (!type || !NOTIFY_TYPES.has(type)) return;
 

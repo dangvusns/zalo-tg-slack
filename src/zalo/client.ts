@@ -146,6 +146,11 @@ async function runQRLogin(
  * If credentials are missing or invalid, throws so the caller can notify
  * the user (e.g. via Telegram) to run /login.
  */
+/** Clear the cached API instance so the next `getZaloApi()` call re-authenticates. */
+export function resetZaloApi(): void {
+  _api = null;
+}
+
 export async function getZaloApi(): Promise<ZaloAPI> {
   if (_api) return _api;
 

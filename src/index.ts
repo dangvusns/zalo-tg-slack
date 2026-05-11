@@ -1,9 +1,11 @@
-import { getZaloApi } from './zalo/client.js';
+import { getZaloApi, resetZaloApi } from './zalo/client.js';
+import { CloseReason } from 'zca-js';
 import { setupZaloHandler } from './zalo/handler.js';
 import { tgBot, syncTelegramCommands } from './telegram/bot.js';
 import { setupTelegramHandler } from './telegram/handler.js';
 import { config } from './config.js';
 import { startUpdateChecker } from './updater.js';
+import { store } from './store.js';
 
 // ── Global safety net — prevent unhandled rejections from crashing ────────────
 process.on('unhandledRejection', (reason) => {
@@ -13,12 +15,67 @@ process.on('uncaughtException', (err) => {
   console.error('[Boot] Uncaught exception (ignored):', err);
 });
 
+// ── Module-level ref to Telegram handler's API setter (used by reconnect) ──────
+let _setZaloApi: ((api: Awaited<ReturnType<typeof getZaloApi>>) => void) | null = null;
+
 // ── Boot Zalo (also used when /login swaps in a fresh API) ───────────────────
 
-async function startZalo(api: Awaited<ReturnType<typeof getZaloApi>>): Promise<void> {
+async function pruneLeftGroupTopics(api: Awaited<ReturnType<typeof getZaloApi>>): Promise<void> {
+  try {
+    const groups = await api.getAllGroups() as { gridVerMap?: Record<string, string> } | undefined;
+    const activeGroupIds = new Set(Object.keys(groups?.gridVerMap ?? {}));
+    const removed: string[] = [];
+    for (const entry of store.all()) {
+      if (entry.type === 1 && !activeGroupIds.has(entry.zaloId)) {
+        store.remove(entry.topicId);
+        removed.push(`${entry.name} (${entry.zaloId})`);
+      }
+    }
+    if (removed.length > 0) {
+      console.log(`[Boot] Pruned ${removed.length} stale group topic(s): ${removed.join(', ')}`);
+    }
+  } catch (err) {
+    console.warn('[Boot] Could not prune stale group topics:', err);
+  }
+}
+
+async function startZalo(
+  api: Awaited<ReturnType<typeof getZaloApi>>,
+  isReconnect = false,
+): Promise<void> {
+  if (!isReconnect) void pruneLeftGroupTopics(api);
   await setupZaloHandler(api);
   api.listener.start();
-  console.log('[Boot] Zalo listener started ✓');
+  console.log(`[Boot] Zalo listener ${isReconnect ? 're' : ''}started ✓`);
+
+  // Auto-reconnect on unexpected disconnects (skip on intentional stop)
+  api.listener.once('disconnected', (code: CloseReason, _reason: string) => {
+    if ((code as number) === 1000 /* ManualClosure */) return;
+    console.warn(`[Boot] Zalo disconnected (code=${code}), reconnecting in 5 s…`);
+    tgBot.telegram.sendMessage(
+      config.telegram.groupId,
+      '⚠️ Zalo bị ngắt kết nối, đang thử kết nối lại…',
+    ).catch(() => undefined);
+    setTimeout(() => {
+      void (async () => {
+        try {
+          resetZaloApi();
+          const newApi = await getZaloApi();
+          _setZaloApi?.(newApi);
+          await startZalo(newApi, true);
+          tgBot.telegram.sendMessage(config.telegram.groupId, '✅ Zalo đã kết nối lại.').catch(() => undefined);
+          console.log('[Boot] Zalo reconnected ✓');
+        } catch (err) {
+          console.error('[Boot] Zalo reconnect failed:', err);
+          tgBot.telegram.sendMessage(
+            config.telegram.groupId,
+            '⚠️ Kết nối lại Zalo thất bại. Hãy dùng <b>/login</b> để đăng nhập lại.',
+            { parse_mode: 'HTML' },
+          ).catch(() => undefined);
+        }
+      })();
+    }, 5_000);
+  });
 }
 
 async function main(): Promise<void> {
@@ -34,8 +91,9 @@ async function main(): Promise<void> {
   // ── Wire up Telegram handler BEFORE launching the bot ─────────────────────
   // setupTelegramHandler returns a setter to inject the Zalo API after auto-login.
   const setZaloApi = setupTelegramHandler(null, async (newApi) => {
-    await startZalo(newApi);
+    await startZalo(newApi, true);
   });
+  _setZaloApi = setZaloApi;
 
   // ── Register bot commands for Telegram menu ───────────────────────────────
   tgBot.telegram.setMyCommands([
@@ -48,6 +106,7 @@ async function main(): Promise<void> {
     { command: 'friendrequests', description: 'Xem lời mời kết bạn & lời mời nhóm' },
     { command: 'topic',          description: 'Quản lý topic: list / info / delete' },
     { command: 'recall',         description: 'Thu hồi tin nhắn (reply vào tin đã gửi)' },
+    { command: 'status',         description: 'Xem trạng thái bridge: uptime, số topic, Zalo' },
   ]).catch(() => undefined);
 
   // ── Start Telegram bot so /login can be received immediately ───────────────

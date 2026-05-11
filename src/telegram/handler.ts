@@ -8,6 +8,10 @@ import { tgBot } from './bot.js';
 import { config } from '../config.js';
 import { downloadToTemp, cleanTemp, convertToM4a, extractVideoThumbnail } from '../utils/media.js';
 import { triggerQRLogin } from '../zalo/client.js';
+import { escapeHtml } from '../utils/format.js';
+
+// Bridge start time (module load = process start)
+const _bridgeStartTime = Date.now();
 
 
 // ── Mention resolution helper ──────────────────────────────────────────────
@@ -23,6 +27,7 @@ function resolveTgMentions(
   text: string,
   entities: ReadonlyArray<TgEntity> | undefined,
   forZaloGroup: boolean,
+  zaloId?: string,
 ): Array<{ pos: number; uid: string; len: number }> {
   const result: Array<{ pos: number; uid: string; len: number }> = [];
   if (!forZaloGroup) return result;
@@ -32,11 +37,15 @@ function resolveTgMentions(
     for (const e of entities) {
       if (e.type === 'mention') {
         const rawName = text.slice(e.offset + 1, e.offset + e.length); // strip leading @
-        const uid = userCache.resolveByName(rawName);
+        const uid = zaloId
+          ? userCache.resolveByNameInGroup(rawName, zaloId)
+          : userCache.resolveByName(rawName);
         if (uid) result.push({ pos: e.offset, uid, len: e.length });
       } else if (e.type === 'text_mention' && e.user) {
         const rawName = e.user.first_name + (e.user.last_name ? ` ${e.user.last_name}` : '');
-        const uid = userCache.resolveByName(rawName);
+        const uid = zaloId
+          ? userCache.resolveByNameInGroup(rawName, zaloId)
+          : userCache.resolveByName(rawName);
         if (uid) result.push({ pos: e.offset, uid, len: e.length });
       }
     }
@@ -55,7 +64,9 @@ function resolveTgMentions(
       const words = captured.split(' ');
       for (let end = words.length; end >= 1; end--) {
         const candidate = words.slice(0, end).join(' ');
-        const uid = userCache.resolveByName(candidate);
+        const uid = zaloId
+          ? userCache.resolveByNameInGroup(candidate, zaloId)
+          : userCache.resolveByName(candidate);
         if (uid) {
           result.push({ pos: m.index, uid, len: ('@' + candidate).length });
           break;
@@ -1135,6 +1146,7 @@ export function setupTelegramHandler(
           msg.text,
           ('entities' in msg ? msg.entities : undefined) as ReadonlyArray<TgEntity> | undefined,
           threadType === ThreadType.Group,
+          threadType === ThreadType.Group ? zaloId : undefined,
         );
 
         // Auto-prepend @Name when replying to someone else's message in a group
@@ -1292,7 +1304,7 @@ export function setupTelegramHandler(
           ? (msg as { caption_entities?: ReadonlyArray<TgEntity> }).caption_entities
           : undefined);
         const rawMentions = cap
-          ? resolveTgMentions(cap, capEntities, threadType === ThreadType.Group)
+          ? resolveTgMentions(cap, capEntities, threadType === ThreadType.Group, threadType === ThreadType.Group ? zaloId : undefined)
           : [];
         if (_autoMentionForMedia) {
           const prefixLen = _autoMentionForMedia.prefix.length;
@@ -1793,6 +1805,41 @@ export function setupTelegramHandler(
     } catch (err) {
       console.error('[TG→Zalo] poll_answer error:', err);
     }
+  });
+
+  // /status — bridge uptime, topic count, Zalo account
+  tgBot.command('status', async (ctx) => {
+    if (ctx.chat.id !== config.telegram.groupId) return;
+    const replyOpts = ctx.message.message_thread_id
+      ? { message_thread_id: ctx.message.message_thread_id }
+      : {};
+    const uptimeSec = Math.floor((Date.now() - _bridgeStartTime) / 1000);
+    const h = Math.floor(uptimeSec / 3600);
+    const m = Math.floor((uptimeSec % 3600) / 60);
+    const s = uptimeSec % 60;
+    const uptimeStr = `${h}g ${m}p ${s}s`;
+    const all = store.all();
+    const groupCount = all.filter(e => e.type === 1).length;
+    const dmCount    = all.length - groupCount;
+    let accountLine = '\n👤 Zalo: <b>chưa kết nối</b>';
+    if (currentApi) {
+      try {
+        const info = await currentApi.fetchAccountInfo() as {
+          profile?: { displayName?: string; zaloName?: string };
+        };
+        const name = info?.profile?.displayName ?? info?.profile?.zaloName ?? '?';
+        accountLine = `\n👤 Zalo: <b>${escapeHtml(name)}</b> 🟢`;
+      } catch {
+        accountLine = '\n👤 Zalo: đã kết nối 🟢';
+      }
+    }
+    await ctx.telegram.sendMessage(
+      config.telegram.groupId,
+      `📊 <b>Trạng thái Bridge</b>${accountLine}\n` +
+      `⏱ Uptime: <code>${uptimeStr}</code>\n` +
+      `📌 Topics: <b>${all.length}</b> (${groupCount} nhóm, ${dmCount} DM)`,
+      { ...replyOpts, parse_mode: 'HTML' },
+    );
   });
 
   return setCurrentApi;
