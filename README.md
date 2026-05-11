@@ -234,6 +234,52 @@ src/
 
 ---
 
+## Data Files
+
+### `data/topics.json`
+
+Plain JSON. Maps each Zalo conversation ID (group or DM) to its Telegram Forum Topic ID plus metadata (display name, type). Written on every new topic creation; read once at startup.
+
+### `data/msg-map.json` (gzipped binary)
+
+Persists the bidirectional mapping between Zalo message IDs and Telegram message IDs so that reply chains survive a process restart. The file is **gzip-compressed** (detected automatically via the `0x1F 0x8B` magic bytes at load time) and uses a compact **v2 format** to minimise I/O.
+
+#### v2 format (written since May 2026)
+
+```jsonc
+{
+  "v": 2,
+  // String intern table — every repeated string (zaloId, msgType, UID…) is
+  // stored once here and referenced by index in the data arrays below.
+  "s": ["850431…", "webchat", "uid123", …],
+  // Pairs: [zaloMsgId, tgMessageId]
+  // zaloMsgId is an index into "s"; tgMessageId is a plain number.
+  "p": [[0, 123456], [1, 123457], …],
+  // Quote data per TG message (used for reply chain resolution and auto-mention):
+  // [tgId, msgIdIdx, cliMsgIdIdx, uidFromIdx, ts, msgTypeIdx, content, ttl, zaloIdIdx, threadType]
+  "q": [[123456, 0, 1, 2, 1746000000, 5, "hello", 0, 0, 1], …]
+}
+```
+
+#### Why "0" entries are filtered out
+
+Zalo sets `realMsgId = 0` for messages that have no secondary ID. Because `String(0) === "0"`, these were previously stored as `["0", tgId]` pairs — up to **45 % of all pairs**. They are now discarded at both write time (`msgStore.save`) and read time (`_loadMsgMap`):
+
+- No legitimate lookup ever queries `"0"`: real Zalo message IDs are 13-digit timestamps.
+- Keeping them caused a hidden collision bug: every message with `realMsgId = 0` overwrote the same key, so `getTgMsgId("0")` would return the TG ID of an arbitrary recent message — producing a false-positive reply target.
+
+#### Size progression
+
+| Format | Size |
+|---|---|
+| v1 plain JSON | ~80 KB |
+| v2 intern + positional arrays | ~46 KB (−44 %) |
+| v2 + gzip level 9 + no-zero filtering | ~13 KB (−85 %) |
+
+`gunzipSync` on 13 KB is measurably faster than `JSON.parse` on 80 KB; the built-in `node:zlib` module is used — no extra dependencies.
+
+---
+
 ## Security Considerations
 
 - `.env` and `credentials.json` are listed in `.gitignore` and must never be committed to version control.

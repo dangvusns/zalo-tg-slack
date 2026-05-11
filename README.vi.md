@@ -234,6 +234,52 @@ src/
 
 ---
 
+## File dữ liệu
+
+### `data/topics.json`
+
+Plain JSON. Ánh xạ mỗi ID cuộc trò chuyện Zalo (nhóm hoặc nhắn riêng) tới Telegram Forum Topic ID kèm metadata (tên hiển thị, loại). Được ghi mỗi khi tạo topic mới; đọc một lần lúc khởi động.
+
+### `data/msg-map.json` (nén gzip)
+
+Lưu trữ ánh xạ hai chiều giữa Zalo message ID và Telegram message ID để reply chain không bị mất khi restart. File được **nén gzip** (tự động nhận diện qua magic bytes `0x1F 0x8B` lúc đọc) và dùng **định dạng v2** gọn nhẹ để tối thiểu hoá I/O.
+
+#### Định dạng v2 (áp dụng từ tháng 5/2026)
+
+```jsonc
+{
+  "v": 2,
+  // Bảng intern chuỗi — mỗi chuỗi lặp lại (zaloId, msgType, UID…) chỉ lưu
+  // một lần ở đây và được tham chiếu bằng chỉ số trong các mảng dữ liệu bên dưới.
+  "s": ["850431…", "webchat", "uid123", …],
+  // Cặp ánh xạ: [zaloMsgId, tgMessageId]
+  // zaloMsgId là chỉ số trong "s"; tgMessageId là số nguyên thông thường.
+  "p": [[0, 123456], [1, 123457], …],
+  // Dữ liệu quote theo TG message (dùng cho reply chain và auto-mention):
+  // [tgId, msgIdIdx, cliMsgIdIdx, uidFromIdx, ts, msgTypeIdx, content, ttl, zaloIdIdx, threadType]
+  "q": [[123456, 0, 1, 2, 1746000000, 5, "hello", 0, 0, 1], …]
+}
+```
+
+#### Tại sao lọc bỏ các entry `"0"`
+
+Zalo đặt `realMsgId = 0` cho những tin nhắn không có ID phụ. Vì `String(0) === "0"`, trước đây chúng được lưu thành cặp `["0", tgId]` — chiếm tới **45 % tổng số cặp**. Nay chúng bị loại bỏ cả khi ghi (`msgStore.save`) lẫn khi đọc (`_loadMsgMap`):
+
+- Không có lookup nào có nghĩa khi query `"0"`: Zalo message ID thực là số timestamp 13 chữ số, không bao giờ là `0`.
+- Giữ chúng gây **lỗi collision ẩn**: nhiều tin nhắn khác nhau đều có `realMsgId = 0` sẽ ghi đè lên cùng một key, khiến `getTgMsgId("0")` trả về TG ID của một tin nhắn tuỳ tiện — tạo ra reply target sai.
+
+#### Lịch sử kích thước
+
+| Định dạng | Kích thước |
+|---|---|
+| v1 plain JSON | ~80 KB |
+| v2 intern + positional arrays | ~46 KB (−44 %) |
+| v2 + gzip level 9 + lọc zero | ~13 KB (−85 %) |
+
+`gunzipSync` trên 13 KB nhanh hơn đáng kể so với `JSON.parse` trên 80 KB; module `node:zlib` có sẵn được dùng — không cần thêm dependency.
+
+---
+
 ## Bảo mật
 
 - `.env` và `credentials.json` được liệt kê trong `.gitignore` và tuyệt đối không được commit lên version control.
