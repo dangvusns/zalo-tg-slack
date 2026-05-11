@@ -520,7 +520,7 @@ export async function setupZaloHandler(api: ZaloAPI): Promise<void> {
         tgBase.reply_parameters = { message_id: tgReplyMsgId, allow_sending_without_reply: true };
       }
 
-      const caption = type === ThreadType.Group ? groupCaption(senderName) : undefined;
+      const caption = groupCaption(senderName);
       const tgOpts  = { ...tgBase, parse_mode: 'HTML' as const, caption };
 
       // Build quote data + mapping helper — saved after every successful TG send
@@ -558,9 +558,7 @@ export async function setupZaloHandler(api: ZaloAPI): Promise<void> {
         const bodyHtml = mentions?.length
           ? applyMentionsHtml(truncate(body), mentions)
           : escapeHtml(truncate(body));
-        const tgText = type === ThreadType.Group
-          ? formatGroupMsgHtml(senderName, bodyHtml)
-          : bodyHtml;
+        const tgText = formatGroupMsgHtml(senderName, bodyHtml);
         const sent = await tg.sendMessage(
           config.telegram.groupId,
           tgText,
@@ -610,12 +608,10 @@ export async function setupZaloHandler(api: ZaloAPI): Promise<void> {
                   {
                     ...buf.tgBase,
                     parse_mode: 'HTML' as const,
-                    caption: type === ThreadType.Group
-                      ? photoCaption
-                        ? `${groupCaption(buf.senderName)}
+                    caption: photoCaption
+                      ? `${groupCaption(buf.senderName)}
 ${escapeHtml(photoCaption)}`
-                        : groupCaption(buf.senderName)
-                      : photoCaption ? escapeHtml(photoCaption) : undefined,
+                      : groupCaption(buf.senderName),
                   },
                 );
                 // Use buf.zaloQuote which already has the correct cliMsgId and
@@ -634,12 +630,10 @@ ${escapeHtml(photoCaption)}`
                 });
                 if (dlPaths.length === 0) return;
                 localPaths.push(...dlPaths);
-                const captionText = type === ThreadType.Group
-                  ? photoCaption
-                    ? `${groupCaption(buf.senderName)}
+                const captionText = photoCaption
+                  ? `${groupCaption(buf.senderName)}
 ${escapeHtml(photoCaption)}`
-                    : groupCaption(buf.senderName)
-                  : photoCaption ? escapeHtml(photoCaption) : undefined;
+                  : groupCaption(buf.senderName);
                 // Telegram limits media groups to 10 items — split into batches
                 const BATCH = 10;
                 let firstSaved = false;
@@ -781,9 +775,7 @@ ${escapeHtml(photoCaption)}`
             let sent: { message_id: number };
             if (isAnimated) {
               // Animated stickers are sprite sheets — send as photo with label
-              const animCaption = type === ThreadType.Group
-                ? `${groupCaption(senderName)}<i>(sticker động 🎥)</i>`
-                : `<i>(sticker động 🎥)</i>`;
+              const animCaption = `${groupCaption(senderName)} <i>(sticker động 🎥)</i>`;
               const stream = createReadStream(localPath);
               sent = await tg.sendPhoto(config.telegram.groupId, { source: stream }, {
                 ...tgBase,
@@ -818,9 +810,7 @@ ${escapeHtml(photoCaption)}`
         const href  = media.href;
         const title = media.title ?? href;
         if (!href) return;
-        const linkText = type === ThreadType.Group
-          ? `${groupCaption(senderName)}\n<a href="${href}">${title}</a>`
-          : `<a href="${href}">${title}</a>`;
+        const linkText = `${groupCaption(senderName)}\n<a href="${href}">${title}</a>`;
         const sent = await tg.sendMessage(config.telegram.groupId, linkText, {
           ...tgBase,
           parse_mode: 'HTML',
@@ -853,9 +843,7 @@ ${escapeHtml(photoCaption)}`
                 if (info.bankName)      caption += `\nNgân hàng: <b>${info.bankName}</b>`;
                 if (info.accountNumber) caption += `\nSTK: <code>${info.accountNumber}</code>`;
                 if (info.holderName)    caption += `\nChủ TK: <b>${info.holderName}</b>`;
-                const fullCaption = type === ThreadType.Group
-                  ? `${groupCaption(senderName)}\n${caption}`
-                  : caption;
+                const fullCaption = `${groupCaption(senderName)}\n${caption}`;
                 const sent = await tg.sendPhoto(
                   config.telegram.groupId,
                   { source: qrBuf },
@@ -893,7 +881,7 @@ ${escapeHtml(photoCaption)}`
         };
         const icon = ACTION_ICONS[media.action ?? ''] ?? '📋';
         const body = `${icon} ${label}`;
-        const text = type === ThreadType.Group ? `${groupCaption(senderName)}\n${body}` : body;
+        const text = `${groupCaption(senderName)}\n${body}`;
         const sent = await tg.sendMessage(config.telegram.groupId, text, {
           ...tgBase,
           parse_mode: 'HTML',
@@ -920,20 +908,18 @@ ${escapeHtml(photoCaption)}`
             lng,
             { ...tgBase } as Parameters<typeof tg.sendLocation>[3],
           );
-          if (type === ThreadType.Group) {
-            // Send sender name as a follow-up caption since sendLocation has no HTML caption
+          // Send sender name as a follow-up caption since sendLocation has no HTML caption
             await tg.sendMessage(
               config.telegram.groupId,
               `${groupCaption(senderName)}📍 Vị trí`,
               { ...tgBase, parse_mode: 'HTML' },
             );
-          }
           saveTgMapping(sent);
         } else {
           // Fallback: Google Maps link
           const mapsUrl = media.href || '#';
           const body    = `📍 <a href="${mapsUrl}">Vị trí</a>`;
-          const text    = type === ThreadType.Group ? `${groupCaption(senderName)}\n${body}` : body;
+          const text    = `${groupCaption(senderName)}\n${body}`;
           const sent    = await tg.sendMessage(config.telegram.groupId, text, { ...tgBase, parse_mode: 'HTML' });
           saveTgMapping(sent);
         }
