@@ -533,7 +533,13 @@ export async function setupZaloHandler(api: ZaloAPI): Promise<void> {
         uidFrom:  msg.data.uidFrom,
         ts:       msg.data.ts,
         msgType:  msgType,
-        content:  msg.data.content as string | Record<string, unknown>,
+        // For text messages (content is a plain string), keep it as-is so zca-js
+        // can send it as qmsg. For media messages (photo, video, etc.), store the
+        // parsed object so prepareQMSGAttach builds a correct thumbnail reference
+        // (thumb/href fields) instead of receiving a raw JSON string.
+        content:  text !== null
+          ? (msg.data.content as string)
+          : (media as Record<string, unknown>),
         ttl:      msg.data.ttl ?? 0,
         zaloId,
         threadType: type,
@@ -610,17 +616,9 @@ ${escapeHtml(photoCaption)}`
                       : photoCaption ? escapeHtml(photoCaption) : undefined,
                   },
                 );
-                msgStore.save(sent.message_id, buf.zaloMsgIds, {
-                  msgId: buf.zaloMsgIds[0]!,
-                  cliMsgId: '',
-                  uidFrom: msg.data.uidFrom,
-                  ts: msg.data.ts,
-                  msgType,
-                  content: msg.data.content as string | Record<string, unknown>,
-                  ttl: msg.data.ttl ?? 0,
-                  zaloId,
-                  threadType: type,
-                });
+                // Use buf.zaloQuote which already has the correct cliMsgId and
+                // parsed media content object (not raw JSON string).
+                msgStore.save(sent.message_id, buf.zaloMsgIds, buf.zaloQuote!);
               } finally { await cleanTemp(localPath); }
             } else {
               // Multi-photo album — download all concurrently and send as media group
@@ -659,17 +657,8 @@ ${escapeHtml(photoCaption)}`
                   // Save mapping for the very first photo (for reply chain)
                   if (!firstSaved && sentMsgs.length > 0) {
                     firstSaved = true;
-                    msgStore.save(sentMsgs[0]!.message_id, buf.zaloMsgIds, {
-                      msgId: buf.zaloMsgIds[0]!,
-                      cliMsgId: '',
-                      uidFrom: msg.data.uidFrom,
-                      ts: msg.data.ts,
-                      msgType,
-                      content: msg.data.content as string | Record<string, unknown>,
-                      ttl: msg.data.ttl ?? 0,
-                      zaloId,
-                      threadType: type,
-                    });
+                    // Use buf.zaloQuote (correct cliMsgId + parsed media object)
+                    msgStore.save(sentMsgs[0]!.message_id, buf.zaloMsgIds, buf.zaloQuote!);
                   }
                 }
               } finally {
