@@ -23,7 +23,12 @@ const filePath = path.resolve(config.dataDir, 'channels.json');
 function load(): StoreData {
   if (!existsSync(filePath)) return { channels: {}, zaloIndex: {}, backfilled: {} };
   try {
-    return JSON.parse(readFileSync(filePath, 'utf8')) as StoreData;
+    const raw = JSON.parse(readFileSync(filePath, 'utf8')) as Partial<StoreData>;
+    return {
+      channels: raw.channels ?? {},
+      zaloIndex: raw.zaloIndex ?? {},
+      backfilled: raw.backfilled ?? {},
+    };
   } catch {
     return { channels: {}, zaloIndex: {}, backfilled: {} };
   }
