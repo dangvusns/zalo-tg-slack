@@ -1,32 +1,37 @@
 import type { ZaloAPI } from './zalo/types.js';
 import { store, userCache } from './store.js';
-import { getOrCreateChannel } from './slack/client.js';
 import { sendToSlack, SlackMessage } from './slack/handler.js';
-import { escapeSlackMrkdwn, truncate, channelCaption, applyMentionsMrkdwn } from './utils/format.js';
+import { escapeSlackMrkdwn, truncate, applyMentionsMrkdwn } from './utils/format.js';
 import { downloadToTemp, cleanTemp } from './utils/media.js';
 import path from 'path';
 
 const BACKFILL_BATCH_SIZE = 100;
 
-interface ZaloGroupMessage {
+interface ZaloGroupMessageData {
   msgId: string;
   uidFrom: string;
-  dName: string;
+  dName: string | null;
   ts: string;
-  content: string;
+  content: string | Record<string, unknown>;
   msgType: string;
   mentions?: Array<{ uid: string; pos: number; len: number; type: 0 | 1 }>;
 }
 
-async function getGroupDisplayName(api: ZaloAPI, groupId: string): Promise<string> {
-  try {
-    const info = await api.getGroupInfo(groupId) as {
-      gridInfoMap?: Record<string, { name?: string }>;
-    };
-    return info?.gridInfoMap?.[groupId]?.name || groupId;
-  } catch {
-    return groupId;
-  }
+interface ZaloGroupMessage {
+  type: number;
+  data: ZaloGroupMessageData;
+}
+
+function formatTimestamp(ts: string): string {
+  const num = parseInt(ts, 10);
+  if (isNaN(num) || num <= 0) return '';
+  const date = new Date(num);
+  const day = date.getDate().toString().padStart(2, '0');
+  const month = (date.getMonth() + 1).toString().padStart(2, '0');
+  const year = date.getFullYear();
+  const hours = date.getHours().toString().padStart(2, '0');
+  const minutes = date.getMinutes().toString().padStart(2, '0');
+  return `${day}/${month}/${year} ${hours}:${minutes}`;
 }
 
 async function resolveDisplayName(api: ZaloAPI, uid: string, groupId: string): Promise<string> {
@@ -57,152 +62,168 @@ async function processBackfilledMessage(
   groupId: string,
   channelId: string,
 ): Promise<void> {
-  const senderName = await resolveDisplayName(api, msg.uidFrom, groupId);
-  const msgType = msg.msgType || 'text';
+  const data = msg.data;
+  const senderName = await resolveDisplayName(api, data.uidFrom, groupId);
+  const displayName = data.dName || senderName;
+  const msgType = data.msgType || 'webchat';
+  const timestamp = formatTimestamp(data.ts);
 
-  console.log(`[Backfill] Processing ${msgType} msg ${msg.msgId} from ${senderName}`);
+  console.log(`[Backfill] Processing ${msgType} msg ${data.msgId} from ${displayName}`);
 
-  if (msgType === 'text' || (msg.content && typeof msg.content === 'string')) {
-    const body = typeof msg.content === 'string' ? msg.content : '';
+  const content = data.content;
+  const rawContent = typeof content === 'string' ? content : null;
+
+  // Handle text/webchat messages (most common)
+  if (msgType === 'text' || msgType === 'webchat' || rawContent) {
+    const body = typeof content === 'string' ? content : '';
     if (!body.trim()) {
-      console.log(`[Backfill] Skipping empty text msg ${msg.msgId}`);
+      console.log(`[Backfill] Skipping empty ${msgType} msg ${data.msgId}`);
       return;
     }
 
-    const mentions = msg.mentions;
+    const mentions = data.mentions;
     const bodyMrkdwn = mentions?.length
       ? applyMentionsMrkdwn(truncate(body), mentions)
       : escapeSlackMrkdwn(truncate(body));
 
-    const slackMsg: SlackMessage = { type: 'text', text: bodyMrkdwn };
-    await sendToSlack(channelId, senderName, slackMsg);
-    console.log(`[Backfill] ✓ Sent text msg ${msg.msgId}`);
+    const textWithTs = timestamp ? `_[${timestamp}]_\n${bodyMrkdwn}` : bodyMrkdwn;
+    const slackMsg: SlackMessage = { type: 'text', text: textWithTs };
+    await sendToSlack(channelId, displayName, slackMsg);
+    console.log(`[Backfill] ✓ Sent ${msgType} msg ${data.msgId}`);
     return;
   }
 
-  if (msgType === 'chat.videocall' || msgType === 'chat.voicecall') {
-    console.log(`[Backfill] Skipping call msg ${msg.msgId}`);
-    const slackMsg: SlackMessage = {
-      type: 'text',
-      text: `_:phone: ${msgType === 'chat.voicecall' ? 'Voice call' : 'Video call'}_`,
-    };
-    await sendToSlack(channelId, senderName, slackMsg);
-    return;
-  }
-
-  if (msgType === 'webcontent' || msgType === 'link') {
-    let url = '';
-    let title = '';
-    try {
-      const parsed = typeof msg.content === 'string' ? JSON.parse(msg.content) : msg.content;
-      url = parsed.href || '';
-      title = parsed.title || url;
-    } catch {
-      url = String(msg.content);
-      title = url;
-    }
-    if (!url) {
-      console.log(`[Backfill] Skipping ${msgType} msg ${msg.msgId}: no URL`);
-      return;
-    }
-    const slackMsg: SlackMessage = { type: 'link', url, title };
-    await sendToSlack(channelId, senderName, slackMsg);
-    console.log(`[Backfill] ✓ Sent link msg ${msg.msgId}`);
-    return;
-  }
-
-  if (msgType === 'file') {
-    let url = '';
-    let filename = 'file';
-    try {
-      const parsed = typeof msg.content === 'string' ? JSON.parse(msg.content) : msg.content;
-      url = parsed.href || '';
-      filename = parsed.title || 'file';
-    } catch {}
-    if (!url) {
-      console.log(`[Backfill] Skipping file msg ${msg.msgId}: no URL`);
-      return;
-    }
-    const ext = path.extname(url.split('?')[0] || '').toLowerCase() || '.bin';
-    const localPath = await downloadToTemp(url, `${filename}${ext}`);
-    try {
-      const slackMsg: SlackMessage = { type: 'file', filePath: localPath, filename };
-      await sendToSlack(channelId, senderName, slackMsg);
-      console.log(`[Backfill] ✓ Sent file msg ${msg.msgId}`);
-    } finally { await cleanTemp(localPath); }
-    return;
-  }
-
-  if (msgType === 'photo' || msgType === 'image') {
+  // Handle image/photo
+  if (msgType === 'chat.photo' || msgType === 'image' || msgType === 'photo') {
     let url = '';
     let caption = '';
     try {
-      const parsed = typeof msg.content === 'string' ? JSON.parse(msg.content) : msg.content;
-      url = parsed.href || '';
-      caption = parsed.title || '';
+      const parsed = typeof content === 'object' ? content : {};
+      url = (parsed.href as string) || '';
+      caption = (parsed.title as string) || '';
       if (parsed.params) {
         try {
-          const p = JSON.parse(parsed.params);
+          const p = typeof parsed.params === 'string' ? JSON.parse(parsed.params) : parsed.params;
           if (p.hd) url = p.hd;
         } catch {}
       }
     } catch {}
     if (!url) {
-      console.log(`[Backfill] Skipping ${msgType} msg ${msg.msgId}: no URL`);
+      console.log(`[Backfill] Skipping ${msgType} msg ${data.msgId}: no URL`);
       return;
     }
     const localPath = await downloadToTemp(url, `photo_${Date.now()}.jpg`);
     try {
-      const slackMsg: SlackMessage = { type: 'photo', filePath: localPath, filename: 'photo.jpg', caption };
-      await sendToSlack(channelId, senderName, slackMsg);
-      console.log(`[Backfill] ✓ Sent photo msg ${msg.msgId}`);
+      const captionWithTs = timestamp ? `_[${timestamp}]_${caption ? '\n' + caption : ''}` : caption;
+      const slackMsg: SlackMessage = { type: 'photo', filePath: localPath, filename: 'photo.jpg', caption: captionWithTs || undefined };
+      await sendToSlack(channelId, displayName, slackMsg);
+      console.log(`[Backfill] ✓ Sent photo msg ${data.msgId}`);
     } finally { await cleanTemp(localPath); }
     return;
   }
 
-  if (msgType === 'video') {
+  // Handle video
+  if (msgType === 'video' || msgType === 'chat.video') {
     let url = '';
     try {
-      const parsed = typeof msg.content === 'string' ? JSON.parse(msg.content) : msg.content;
-      url = parsed.href || '';
+      const parsed = typeof content === 'object' ? content : {};
+      url = (parsed.href as string) || '';
     } catch {}
     if (!url) {
-      console.log(`[Backfill] Skipping video msg ${msg.msgId}: no URL`);
+      console.log(`[Backfill] Skipping video msg ${data.msgId}: no URL`);
       return;
     }
     const localPath = await downloadToTemp(url, `video_${Date.now()}.mp4`);
     try {
       const slackMsg: SlackMessage = { type: 'video', filePath: localPath, filename: 'video.mp4' };
-      await sendToSlack(channelId, senderName, slackMsg);
-      console.log(`[Backfill] ✓ Sent video msg ${msg.msgId}`);
+      await sendToSlack(channelId, displayName, slackMsg);
+      console.log(`[Backfill] ✓ Sent video msg ${data.msgId}`);
     } finally { await cleanTemp(localPath); }
     return;
   }
 
-  if (msgType === 'voice') {
+  // Handle voice
+  if (msgType === 'voice' || msgType === 'chat.voice') {
     let url = '';
     try {
-      const parsed = typeof msg.content === 'string' ? JSON.parse(msg.content) : msg.content;
-      url = parsed.href || '';
+      const parsed = typeof content === 'object' ? content : {};
+      url = (parsed.href as string) || '';
     } catch {}
     if (!url) {
-      console.log(`[Backfill] Skipping voice msg ${msg.msgId}: no URL`);
+      console.log(`[Backfill] Skipping voice msg ${data.msgId}: no URL`);
       return;
     }
     const ext = path.extname(url.split('?')[0] || '').toLowerCase() || '.m4a';
     const localPath = await downloadToTemp(url, `voice_${Date.now()}${ext}`);
     try {
       const slackMsg: SlackMessage = { type: 'voice', filePath: localPath, filename: 'voice.m4a' };
-      await sendToSlack(channelId, senderName, slackMsg);
-      console.log(`[Backfill] ✓ Sent voice msg ${msg.msgId}`);
+      await sendToSlack(channelId, displayName, slackMsg);
+      console.log(`[Backfill] ✓ Sent voice msg ${data.msgId}`);
     } finally { await cleanTemp(localPath); }
     return;
   }
 
-  console.log(`[Backfill] Unknown msgType="${msgType}" for msg ${msg.msgId}, content:`, 
-    typeof msg.content === 'string' ? msg.content.slice(0, 100) : JSON.stringify(msg.content).slice(0, 100));
-  const fallbackMsg: SlackMessage = { type: 'text', text: `_:robot_face: [${msgType}]_` };
-  await sendToSlack(channelId, senderName, fallbackMsg);
+  // Handle file
+  if (msgType === 'file' || msgType === 'chat.file') {
+    let url = '';
+    let filename = 'file';
+    try {
+      const parsed = typeof content === 'object' ? content : {};
+      url = (parsed.href as string) || '';
+      filename = (parsed.title as string) || 'file';
+    } catch {}
+    if (!url) {
+      console.log(`[Backfill] Skipping file msg ${data.msgId}: no URL`);
+      return;
+    }
+    const ext = path.extname(url.split('?')[0] || '').toLowerCase() || '.bin';
+    const localPath = await downloadToTemp(url, `${filename}${ext}`);
+    try {
+      const slackMsg: SlackMessage = { type: 'file', filePath: localPath, filename };
+      await sendToSlack(channelId, displayName, slackMsg);
+      console.log(`[Backfill] ✓ Sent file msg ${data.msgId}`);
+    } finally { await cleanTemp(localPath); }
+    return;
+  }
+
+  // Handle link/webcontent
+  if (msgType === 'link' || msgType === 'webcontent' || msgType === 'chat.link') {
+    let url = '';
+    let title = '';
+    try {
+      const parsed = typeof content === 'object' ? content : {};
+      url = (parsed.href as string) || '';
+      title = (parsed.title as string) || url;
+    } catch {
+      url = String(content);
+      title = url;
+    }
+    if (!url) {
+      console.log(`[Backfill] Skipping ${msgType} msg ${data.msgId}: no URL`);
+      return;
+    }
+    const slackMsg: SlackMessage = { type: 'link', url, title };
+    await sendToSlack(channelId, displayName, slackMsg);
+    console.log(`[Backfill] ✓ Sent link msg ${data.msgId}`);
+    return;
+  }
+
+  // Handle calls
+  if (msgType === 'chat.videocall' || msgType === 'chat.voicecall') {
+    const text = timestamp 
+      ? `_[${timestamp}]_\n:phone: ${msgType === 'chat.voicecall' ? 'Voice call' : 'Video call'}`
+      : `:phone: ${msgType === 'chat.voicecall' ? 'Voice call' : 'Video call'}`;
+    const slackMsg: SlackMessage = { type: 'text', text };
+    await sendToSlack(channelId, displayName, slackMsg);
+    console.log(`[Backfill] ✓ Sent call msg ${data.msgId}`);
+    return;
+  }
+
+  console.log(`[Backfill] Unknown msgType="${msgType}" for msg ${data.msgId}, content:`, 
+    typeof content === 'string' ? content.slice(0, 100) : JSON.stringify(content).slice(0, 100));
+  const fallbackText = timestamp ? `_[${timestamp}]_\n:robot_face: [${msgType}]` : `:robot_face: [${msgType}]`;
+  const fallbackMsg: SlackMessage = { type: 'text', text: fallbackText };
+  await sendToSlack(channelId, displayName, fallbackMsg);
 }
 
 export async function backfillGroups(
@@ -230,7 +251,10 @@ export async function backfillGroups(
 
     try {
       console.log(`[Backfill] Fetching history for ${entry.name}...`);
-      const result = await api.getGroupChatHistory(entry.zaloId, BACKFILL_BATCH_SIZE);
+      const result = await api.getGroupChatHistory(entry.zaloId, BACKFILL_BATCH_SIZE) as {
+        groupMsgs?: ZaloGroupMessage[];
+        more?: number;
+      };
 
       if (!result?.groupMsgs?.length) {
         console.log(`[Backfill] No messages found for ${entry.name}`);
@@ -248,12 +272,18 @@ export async function backfillGroups(
 
       console.log(`[Backfill] Processing ${result.groupMsgs.length} messages for ${entry.name}`);
 
-      for (const msg of result.groupMsgs) {
+      // Sort by timestamp ascending (oldest first) for chronological order
+      const sortedMsgs = [...result.groupMsgs].sort((a, b) => {
+        const tsA = parseInt(a.data.ts, 10) || 0;
+        const tsB = parseInt(b.data.ts, 10) || 0;
+        return tsA - tsB;
+      });
+
+      for (const msg of sortedMsgs) {
         try {
-          console.log(`[Backfill] Raw msg ${msg.msgId}:`, JSON.stringify(msg).slice(0, 300));
           await processBackfilledMessage(api, msg, entry.zaloId, channelId);
         } catch (err) {
-          console.error(`[Backfill] Failed to process msg ${msg.msgId}:`, err);
+          console.error(`[Backfill] Failed to process msg ${msg.data.msgId}:`, err);
         }
       }
 
