@@ -25,3 +25,7 @@ npm-debug.log*
 .vscode/
 .idea/
 logs/
+
+# Zalo QR code
+tmp/zalo-qr.png
+zalo-qr.png
