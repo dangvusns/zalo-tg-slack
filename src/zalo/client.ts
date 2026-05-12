@@ -84,7 +84,7 @@ async function runQRLogin(
           .then(async () => {
             // Print to terminal
             await new Promise<void>((res) => {
-              qrcode.generate(code, { small: true }, (qrStr) => {
+              qrcode.generate(code, { small: true }, (qrStr: string) => {
                 console.clear();
                 console.log('┌─────────────────────────────────────────┐');
                 console.log('│      Quét QR bằng ứng dụng Zalo         │');
@@ -155,7 +155,7 @@ export async function getZaloApi(): Promise<ZaloAPI> {
   if (_api) return _api;
 
   if (!existsSync(config.zalo.credentialsPath)) {
-    throw new Error('Chưa có file credentials.json — hãy gửi /login trong Telegram để đăng nhập lần đầu.');
+    throw new Error('Chưa có file credentials.json — hãy đăng nhập Zalo bằng QR trước.');
   }
 
   const zalo = new Zalo(ZALO_OPTIONS);

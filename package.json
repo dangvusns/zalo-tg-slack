@@ -1,7 +1,7 @@
 {
-  "name": "zalo-tg",
+  "name": "zalo-slack-archiver",
   "version": "1.0.0",
-  "description": "Zalo ↔ Telegram bridge using Forum Topics",
+  "description": "Zalo → Slack archival bridge for AI analysis",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
@@ -9,18 +9,18 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@types/qrcode": "^1.5.6",
+    "@slack/web-api": "^7.0.0",
     "axios": "^1.7.2",
     "dotenv": "^16.4.5",
     "image-size": "^2.0.2",
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
-    "telegraf": "^4.16.3",
     "zca-js": "^2.0.0"
   },
   "devDependencies": {
     "@types/image-size": "^0.7.0",
     "@types/node": "^20.14.0",
+    "@types/qrcode": "^1.5.6",
     "@types/qrcode-terminal": "^0.12.2",
     "tsx": "^4.15.6",
     "typescript": "^5.4.5"

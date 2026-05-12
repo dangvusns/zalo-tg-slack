@@ -3,7 +3,6 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-/** Root của project (src/../) */
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 
 function requireEnv(key: string): string {
@@ -14,7 +13,6 @@ function requireEnv(key: string): string {
 
 function resolvePath(envVal: string | undefined, defaultRelative: string): string {
   const raw = envVal ?? defaultRelative;
-  // Already absolute → use as-is, otherwise resolve from project root
   return path.isAbsolute(raw) ? raw : path.resolve(PROJECT_ROOT, raw);
 }
 
@@ -25,9 +23,10 @@ function envFlag(key: string, defaultValue = false): boolean {
 }
 
 export const config = {
-  telegram: {
-    token:   requireEnv('TG_TOKEN'),
-    groupId: Number(requireEnv('TG_GROUP_ID')),
+  slack: {
+    token:          requireEnv('SLACK_BOT_TOKEN'),
+    channelPrefix:  process.env.SLACK_CHANNEL_PREFIX ?? 'zg',
+    dmPrefix:       process.env.SLACK_DM_PREFIX ?? 'dm',
   },
   zalo: {
     credentialsPath: resolvePath(process.env.ZALO_CREDENTIALS_PATH, 'credentials.json'),
