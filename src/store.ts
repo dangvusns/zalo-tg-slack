@@ -14,16 +14,18 @@ interface StoreData {
   channels:  Record<string, ChannelMapping>;
   /** `${type}:${zaloId}` → slackChannelId (reverse index) */
   zaloIndex: Record<string, string>;
+  /** zaloId → last backfilled timestamp (ms) */
+  backfilled: Record<string, number>;
 }
 
 const filePath = path.resolve(config.dataDir, 'channels.json');
 
 function load(): StoreData {
-  if (!existsSync(filePath)) return { channels: {}, zaloIndex: {} };
+  if (!existsSync(filePath)) return { channels: {}, zaloIndex: {}, backfilled: {} };
   try {
     return JSON.parse(readFileSync(filePath, 'utf8')) as StoreData;
   } catch {
-    return { channels: {}, zaloIndex: {} };
+    return { channels: {}, zaloIndex: {}, backfilled: {} };
   }
 }
 
@@ -69,6 +71,19 @@ export const store = {
 
   all(): ChannelMapping[] {
     return Object.values(_data.channels);
+  },
+
+  getLastBackfilled(zaloId: string): number | undefined {
+    return _data.backfilled[zaloId];
+  },
+
+  setLastBackfilled(zaloId: string, ts: number): void {
+    _data.backfilled[zaloId] = ts;
+    persist(_data);
+  },
+
+  isBackfilled(zaloId: string): boolean {
+    return zaloId in _data.backfilled;
   },
 
   reload(): void {

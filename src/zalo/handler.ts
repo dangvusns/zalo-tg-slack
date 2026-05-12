@@ -306,7 +306,7 @@ export async function setupZaloHandler(api: ZaloAPI): Promise<void> {
         const bodyMrkdwn = mentions?.length
           ? applyMentionsMrkdwn(truncate(body), mentions)
           : escapeSlackMrkdwn(truncate(body));
-        const slackMsg: SlackMessage = { type: 'text', text: `${channelCaption(senderName)}${bodyMrkdwn}` };
+        const slackMsg: SlackMessage = { type: 'text', text: bodyMrkdwn };
         await sendToSlack(channelId, senderName, slackMsg);
         return;
       }
@@ -489,7 +489,7 @@ export async function setupZaloHandler(api: ZaloAPI): Promise<void> {
           'zinstant.qr': ':camera:',
         };
         const icon = ACTION_ICONS[media.action ?? ''] ?? ':clipboard:';
-        const slackMsg: SlackMessage = { type: 'text', text: `${channelCaption(senderName)}${icon} ${label}` };
+        const slackMsg: SlackMessage = { type: 'text', text: `${icon} ${label}` };
         await sendToSlack(channelId, senderName, slackMsg);
         return;
       }
@@ -540,7 +540,7 @@ export async function setupZaloHandler(api: ZaloAPI): Promise<void> {
       }
 
       console.log(`[ZaloHandler] Unhandled msgType="${msgType}" content:`, JSON.stringify(msg.data.content));
-      const fallbackMsg: SlackMessage = { type: 'text', text: `${channelCaption(senderName)}_:robot_face: [${msgType}]_` };
+      const fallbackMsg: SlackMessage = { type: 'text', text: `_:robot_face: [${msgType}]_` };
       await sendToSlack(channelId, senderName, fallbackMsg);
 
     } catch (err) {

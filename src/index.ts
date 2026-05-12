@@ -1,6 +1,7 @@
 import { getZaloApi, resetZaloApi, triggerQRLogin } from './zalo/client.js';
 import { CloseReason } from 'zca-js';
 import { setupZaloHandler } from './zalo/handler.js';
+import { backfillGroups } from './backfill.js';
 import { config } from './config.js';
 import { slack } from './slack/client.js';
 import { existsSync } from 'fs';
@@ -58,6 +59,20 @@ async function main(): Promise<void> {
       ? await getZaloApi()
       : await triggerQRLogin();
     await startZalo(api);
+
+    // Background backfill for group history
+    void (async () => {
+      await new Promise(r => setTimeout(r, 3000)); // Wait 3s for listener to settle
+      console.log('[Backfill] Starting group history backfill...');
+      try {
+        const result = await backfillGroups(api, 2, (done, total, group) => {
+          console.log(`[Backfill] Progress: ${done}/${total} - ${group}`);
+        });
+        console.log(`[Backfill] Complete: ${result.succeeded} succeeded, ${result.failed} failed, ${result.skipped} skipped`);
+      } catch (err) {
+        console.error('[Backfill] Error:', err);
+      }
+    })();
   } catch (err) {
     console.error('[Boot] Zalo login failed:', err);
     process.exit(1);
