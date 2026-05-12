@@ -1,8 +1,9 @@
-import { getZaloApi, resetZaloApi } from './zalo/client.js';
+import { getZaloApi, resetZaloApi, triggerQRLogin } from './zalo/client.js';
 import { CloseReason } from 'zca-js';
 import { setupZaloHandler } from './zalo/handler.js';
 import { config } from './config.js';
 import { slack } from './slack/client.js';
+import { existsSync } from 'fs';
 
 process.on('unhandledRejection', (reason) => {
   console.error('[Boot] Unhandled rejection (ignored):', reason);
@@ -53,11 +54,12 @@ async function main(): Promise<void> {
 
   // Start Zalo
   try {
-    const api = await getZaloApi();
+    const api = existsSync(config.zalo.credentialsPath)
+      ? await getZaloApi()
+      : await triggerQRLogin();
     await startZalo(api);
   } catch (err) {
     console.error('[Boot] Zalo login failed:', err);
-    console.log('[Boot] Make sure credentials.json exists or run the Zalo login flow.');
     process.exit(1);
   }
 
